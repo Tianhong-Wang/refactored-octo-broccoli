@@ -171,32 +171,75 @@ def fetch_details_parallel(selected_df, max_workers=5):
 
     progress_bar.empty()
     return detail_map
-def generate_ai_report(selected_df):
-    deep_data_texts = []
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def summarize_one_case_for_report(title, brand_type, summary, brands, tags, detail):
+    """
+    分层摘要：先把每篇文章压缩成高密度要点，减少最终汇总输入长度，从而显著加速模型推理（B阶段）。
+    结果会按入参缓存，重复生成研报会更快。
+    """
+    sys_instruct = "你是资深商业数据分析师。请把营销案例压缩成高密度要点，避免空话套话。"
+    prompt = f"""
+请将下面案例压缩成结构化要点（中文），控制在 120-180 字：
+- 具体营销动作/机制是什么（必须具体）
+- 可能的目标人群/场景
+- 可量化指标/数据机会（1-2条，尽量可落地）
 
+案例信息：
+标题：{title}
+品牌类型：{brand_type}
+简介：{summary}
+品牌：{brands}
+标签：{tags}
+正文节选：{detail}
+"""
+    resp = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": sys_instruct},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+    )
+    return resp.choices[0].message.content.strip()
 
+def generate_ai_report(selected_df, use_layered_summary=True):
     # 并发抓取正文
-    detail_map = fetch_details_parallel(selected_df, max_workers=5)
+    detail_map = fetch_details_parallel(selected_df, max_workers=min(12, max(4, len(selected_df))))
 
     my_bar = st.progress(0, text="🧠 正在整理分析材料...")
     total = len(selected_df)
 
+    # 这里不再直接把长文本拼给最终汇总，而是先压缩成短摘要
+    case_summaries = []
+
     for i, (idx, row) in enumerate(selected_df.iterrows()):
         my_bar.progress((i + 1) / total, text=f"🧠 正在整理分析材料... ({i+1}/{total})")
+
         detail = detail_map.get(idx, "详情抓取失败。")
 
-        text_block = f"""【案例{i+1}】
-标题：{row['文章标题']}
-品牌类型：{row['品牌类型']}
-简介：{row['一句话简介']}
-品牌：{row['涉及品牌']}
-标签：{row['营销标签']}
-正文节选：{detail}
----"""
-        deep_data_texts.append(text_block)
+        if use_layered_summary:
+            summary_text = summarize_one_case_for_report(
+                title=row.get("文章标题", ""),
+                brand_type=row.get("品牌类型", ""),
+                summary=row.get("一句话简介", ""),
+                brands=row.get("涉及品牌", ""),
+                tags=row.get("营销标签", ""),
+                detail=detail,
+            )
+        else:
+            # 保底：不用分层摘要就保持原信息块（会慢很多）
+            summary_text = f"""标题：{row.get('文章标题','')}
+品牌类型：{row.get('品牌类型','')}
+简介：{row.get('一句话简介','')}
+品牌：{row.get('涉及品牌','')}
+标签：{row.get('营销标签','')}
+正文节选：{detail}"""
+
+        case_summaries.append(f"【案例{i+1}】\n{summary_text}\n---")
 
     my_bar.empty()
-    combined_text = "\n".join(deep_data_texts)
+
+    combined_text = "\n".join(case_summaries)
 
     sys_instruct = """你是一位拥有10年经验的顶级商业数据分析师和 4A 广告公司策略总监。
 你的任务是根据提供的【深度文章正文及数据】，敏锐嗅出背后的商业价值，产出能卖给客户的数据服务解决方案。
@@ -263,7 +306,6 @@ def generate_ai_report(selected_df):
         return response.choices[0].message.content
     except Exception as e:
         return f"生成失败：{e}"
-
 # ================= 6. 搭建可视化看板功能 =================
 def show_news_charts(df):
     news_df = df[df['品牌类型'] == '快讯']
@@ -383,14 +425,19 @@ if not st.session_state.df.empty:
             st.markdown("---")
             show_news_charts(selected_df)
 
-    with col_right:
-        st.markdown("### 🧠 2. 商业洞察报告")
-        if st.button("📄 生成洞察研报", width="stretch", type="primary"):
-            if selected_df.empty:
-                st.error("请先勾选文章！")
-            else:
-                with st.spinner("AI 正在推演中..."):
-                    report = generate_ai_report(selected_df)
-                    st.markdown(report)
+with col_right:
+    st.markdown("### 🧠 2. 商业洞察报告")
+
+    max_cases = st.number_input("研报最多使用案例数（越大越慢）", min_value=3, max_value=50, value=20, step=1)
+    use_layered_summary = st.checkbox("启用分层摘要（推荐：更快更稳）", value=True)
+
+    if st.button("📄 生成洞察研报", width="stretch", type="primary"):
+        if selected_df.empty:
+            st.error("请先勾选文章！")
+        else:
+            selected_for_report = selected_df.head(int(max_cases))
+            with st.spinner("AI 正在推演中..."):
+                report = generate_ai_report(selected_for_report, use_layered_summary=use_layered_summary)
+                st.markdown(report)
 else:
     st.info("👈 请先在左侧采集数据。")
