@@ -425,19 +425,19 @@ if not st.session_state.df.empty:
             st.markdown("---")
             show_news_charts(selected_df)
 
-with col_right:
-    st.markdown("### 🧠 2. 商业洞察报告")
-
-    max_cases = st.number_input("研报最多使用案例数（越大越慢）", min_value=3, max_value=50, value=20, step=1)
-    use_layered_summary = st.checkbox("启用分层摘要（推荐：更快更稳）", value=True)
-
-    if st.button("📄 生成洞察研报", width="stretch", type="primary"):
-        if selected_df.empty:
-            st.error("请先勾选文章！")
-        else:
-            selected_for_report = selected_df.head(int(max_cases))
-            with st.spinner("AI 正在推演中..."):
-                report = generate_ai_report(selected_for_report, use_layered_summary=use_layered_summary)
-                st.markdown(report)
+    with col_right:
+         st.markdown("### 🧠 2. 商业洞察报告")
+            
+          max_cases = st.number_input("研报最多使用案例数（越大越慢）", min_value=3, max_value=50, value=20, step=1)
+         use_layered_summary = st.checkbox("启用分层摘要（推荐：更快更稳）", value=True)
+            
+        if st.button("📄 生成洞察研报", width="stretch", type="primary"):
+            if selected_df.empty:
+                st.error("请先勾选文章！")
+            else:
+                selected_for_report = selected_df.head(int(max_cases))
+                with st.spinner("AI 正在推演中..."):
+                    report = generate_ai_report(selected_for_report, use_layered_summary=use_layered_summary)
+                    st.markdown(report)
 else:
     st.info("👈 请先在左侧采集数据。")
