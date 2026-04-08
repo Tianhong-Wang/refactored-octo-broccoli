@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 
 API_BASE_URL = os.getenv("SJTU_API_BASE_URL", "https://models.sjtu.edu.cn/api/v1").strip()
@@ -132,22 +133,58 @@ def fetch_latest_events(pages=3):
 
 
 # ================= 5. 详情页抓取与 AI 报告 (定制化 Prompt) =================
+@st.cache_data(show_spinner=False, ttl=3600)
 def fetch_article_detail(url):
     try:
-        res = requests.get(url, timeout=8)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=8)
+        res.encoding = "utf-8"
         soup = BeautifulSoup(res.text, "html.parser")
-        return "\n".join([p.get_text(strip=True) for p in soup.find_all('p')])[:800]
-    except:
+        content = "\n".join([p.get_text(strip=True) for p in soup.find_all('p')])
+        content = re.sub(r"\s+", " ", content).strip()
+        return content[:500]
+    except Exception:
         return "详情抓取失败。"
 
+def fetch_details_parallel(selected_df, max_workers=5):
+    detail_map = {}
+    total = len(selected_df)
 
+    progress_bar = st.progress(0, text="🕸️ 正在抓取文章详情...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(fetch_article_detail, row['文章详情页链接']): idx
+            for idx, row in selected_df.iterrows()
+        }
+
+        finished = 0
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                detail_map[idx] = future.result()
+            except Exception:
+                detail_map[idx] = "详情抓取失败。"
+
+            finished += 1
+            progress_bar.progress(finished / total, text=f"🕸️ 正在抓取文章详情... ({finished}/{total})")
+
+    progress_bar.empty()
+    return detail_map
 def generate_ai_report(selected_df):
     deep_data_texts = []
-    my_bar = st.progress(0, text="🕵️‍♂️ 正在深度分析中...")
+
+
+    # 并发抓取正文
+    detail_map = fetch_details_parallel(selected_df, max_workers=5)
+
+    my_bar = st.progress(0, text="🧠 正在整理分析材料...")
+    total = len(selected_df)
 
     for i, (idx, row) in enumerate(selected_df.iterrows()):
-        my_bar.progress((i + 1) / len(selected_df))
-        detail = fetch_article_detail(row['文章详情页链接'])
+        my_bar.progress((i + 1) / total, text=f"🧠 正在整理分析材料... ({i+1}/{total})")
+        detail = detail_map.get(idx, "详情抓取失败。")
+
         text_block = f"""【案例{i+1}】
 标题：{row['文章标题']}
 品牌类型：{row['品牌类型']}
@@ -224,7 +261,6 @@ def generate_ai_report(selected_df):
             temperature=0.7,
         )
         return response.choices[0].message.content
-
     except Exception as e:
         return f"生成失败：{e}"
 
